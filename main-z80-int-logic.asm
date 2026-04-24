@@ -1,203 +1,222 @@
 ;--------------------------------------------------------
-; Z80 8-Ball Game - Standalone Assembly
-; Target: Z80 SBC (No SDCC Runtime)
+; 8-Ball Game for ASM80.com
+; Targeted for Z80 SBC with 8x8 LED Matrix
 ;--------------------------------------------------------
 
-; Memory Map (Adjust for your specific hardware)
-ROM_START   EQU 0x0000
-RAM_START   EQU 0x8000
-STACK_PTR   EQU 0xFFFF
-
-; I/O Ports
-PORT_ROW    EQU 0x01
-PORT_COL    EQU 0x02
-PORT_KBD    EQU 0x03
+; I/O Port Definitions
+PORT_ROW:  EQU 01H
+PORT_COL:  EQU 02H
+PORT_KBD:  EQU 03H
 
 ; Constants
-SCALE       EQU 16
-MAX_COORD   EQU 112 ; (7 * 16)
+SCALE:     EQU 16
+MAX_COORD: EQU 112 ; 7 * 16
 
-    ORG ROM_START
+    ORG 0000H
+    JP START
 
-_start:
-    ld sp, STACK_PTR        ; Initialize Stack Pointer
-    call init_data          ; Copy variables to RAM
-
-;--------------------------------------------------------
-; Main Loop
-;--------------------------------------------------------
-main_loop:
-    in a, (PORT_KBD)        ; Get Key
-    ld c, a
-
-    ; Input Handling (ASCII Check)
-    cp '4'
-    jr nz, check_6
-    ld hl, (cue_x)
-    dec hl
-    ld (cue_x), hl
-check_6:
-    ld a, c
-    cp '6'
-    jr nz, check_8
-    ld hl, (cue_x)
-    inc hl
-    ld (cue_x), hl
-check_8:
-    ld a, c
-    cp '8'
-    jr nz, check_2
-    ld hl, (cue_y)
-    dec hl
-    ld (cue_y), hl
-check_2:
-    ld a, c
-    cp '2'
-    jr nz, check_5
-    ld hl, (cue_y)
-    inc hl
-    ld (cue_y), hl
-check_5:
-    ld a, c
-    cp '5'
-    jr nz, physics
-    ; Load Velocity from LUT
-    ld a, (angle_idx)
-    ld e, a
-    ld d, 0
-    ld hl, cos_lut_ram
-    add hl, de
-    ld a, (hl)
-    ld (cue_dx), a
-    ld hl, sin_lut_ram
-    add hl, de
-    ld a, (hl)
-    ld (cue_dy), a
+    ORG 0100H       ; Standard start for many Z80 monitors
+START:
+    LD SP,0FFFFH    ; Initialize Stack
+    CALL INIT_RAM   ; Set up variables
 
 ;--------------------------------------------------------
-; Physics Logic
+; Main Game Loop
 ;--------------------------------------------------------
-physics:
-    ld a, (cue_dx)
-    ld b, a
-    ld a, (cue_dy)
-    or b
-    jr z, render            ; If dx and dy are 0, skip physics
-
-    ; Update Position
-    ld hl, (cue_x)
-    ld a, (cue_dx)
-    ld e, a
-    rla
-    sbc a, a
-    ld d, a                 ; Sign extend dx to 16-bit
-    add hl, de
-    ld (cue_x), hl
-
-    ld hl, (cue_y)
-    ld a, (cue_dy)
-    ld e, a
-    rla
-    sbc a, a
-    ld d, a                 ; Sign extend dy to 16-bit
-    add hl, de
-    ld (cue_y), hl
-
-    ; Simple Bounce (Check boundaries)
-    ; [Logic omitted for brevity, similar to C logic]
-
-    ; Friction (Linear decay)
-    ld a, (cue_dx)
-    cp 0
-    jr z, fric_y
-    jp p, dec_dx
-    inc a                   ; Negative, so increase toward 0
-    jr store_dx
-dec_dx:
-    dec a                   ; Positive, so decrease toward 0
-store_dx:
-    ld (cue_dx), a
-
-fric_y:
-    ; [Repeat for cue_dy]
+LOOP:
+    IN A,(PORT_KBD) ; Read Keyboard
+    OR A            ; Check if zero
+    JR Z,PHYSICS    ; No key pressed, skip to physics
+    
+    LD C,A          ; Save key in C
+    
+    ; Cardinal movement (4, 6, 8, 2)
+    CP '4'
+    JR NZ,K6
+    LD HL,(CUE_X)
+    DEC HL
+    LD (CUE_X),HL
+K6:
+    LD A,C
+    CP '6'
+    JR NZ,K8
+    LD HL,(CUE_X)
+    INC HL
+    LD (CUE_X),HL
+K8:
+    LD A,C
+    CP '8'
+    JR NZ,K2
+    LD HL,(CUE_Y)
+    DEC HL
+    LD (CUE_Y),HL
+K2:
+    LD A,C
+    CP '2'
+    JR NZ,K5
+    LD HL,(CUE_Y)
+    INC HL
+    LD (CUE_Y),HL
+K5:
+    LD A,C
+    CP '5'          ; SHOOT!
+    JR NZ,PHYSICS
+    CALL FIRE_BALL
 
 ;--------------------------------------------------------
-; Render Logic
+; Physics Section
 ;--------------------------------------------------------
-render:
-    ; Calculate X bitmask
-    ld hl, (cue_x)
-    ld b, 4
-div_x:
-    srl h                   ; Shift right 4 times (divide by 16)
-    rr l
-    djnz div_x
-    ld a, l
-    call get_mask
-    out (PORT_COL), a
+PHYSICS:
+    LD A,(CUE_DX)
+    LD B,A
+    LD A,(CUE_DY)
+    OR B
+    JR Z,RENDER     ; If not moving, just draw
 
-    ; Calculate Y bitmask
-    ld hl, (cue_y)
-    ld b, 4
-div_y:
-    srl h
-    rr l
-    djnz div_y
-    ld a, l
-    call get_mask
-    out (PORT_ROW), a
+    ; Move X
+    LD HL,(CUE_X)
+    LD A,(CUE_DX)
+    CALL SIGN_EXTEND
+    ADD HL,DE
+    LD (CUE_X),HL
 
-    ; Busy Wait Delay
-    ld de, 500
-delay:
-    dec de
-    ld a, d
-    or e
-    jr nz, delay
+    ; Move Y
+    LD HL,(CUE_Y)
+    LD A,(CUE_DY)
+    CALL SIGN_EXTEND
+    ADD HL,DE
+    LD (CUE_Y),HL
 
-    jr main_loop
+    ; Simple Friction (reduce velocity)
+    CALL APPLY_FRICTION
 
 ;--------------------------------------------------------
-; Helper: Convert index (0-7) to bitmask (1, 2, 4... 128)
+; Render Section (Multiplexing)
 ;--------------------------------------------------------
-get_mask:
-    and 0x07                ; Keep only 0-7
-    ld b, a
-    ld a, 1
-    ret z
-mask_loop:
-    add a, a
-    djnz mask_loop
-    ret
+RENDER:
+    ; Handle X (Columns)
+    LD HL,(CUE_X)
+    CALL GET_COORD  ; Returns 0-7 in A
+    CALL BIT_MASK   ; Returns bit pattern (1,2,4...) in A
+    OUT (PORT_COL),A
+
+    ; Handle Y (Rows)
+    LD HL,(CUE_Y)
+    CALL GET_COORD
+    CALL BIT_MASK
+    OUT (PORT_ROW),A
+
+    ; Small Delay
+    LD DE,0200H
+WAIT:
+    DEC DE
+    LD A,D
+    OR E
+    JR NZ,WAIT
+    
+    JP LOOP
 
 ;--------------------------------------------------------
-; Data Initialization (Copy ROM to RAM)
+; Subroutines
 ;--------------------------------------------------------
-init_data:
-    ld hl, rom_data_start
-    ld de, RAM_START
-    ld bc, data_size
-    ldir
-    ret
+
+FIRE_BALL:
+    ; Sets DX and DY based on current angle
+    LD A,(ANGLE_IDX)
+    LD E,A
+    LD D,0
+    LD HL,COS_LUT
+    ADD HL,DE
+    LD A,(HL)
+    LD (CUE_DX),A
+    LD HL,SIN_LUT
+    ADD HL,DE
+    LD A,(HL)
+    LD (CUE_DY),A
+    RET
+
+GET_COORD:
+    ; Divides HL by 16 (SCALE) to get 0-7
+    LD B,4
+DIV4:
+    SRL H
+    RR L
+    DJNZ DIV4
+    LD A,L
+    AND 07H
+    RET
+
+BIT_MASK:
+    ; Converts index 0-7 into bit position
+    LD B,A
+    INC B
+    LD A,0
+    SCF             ; Set Carry Flag
+MASK_L:
+    RLA             ; Rotate Carry into A
+    DJNZ MASK_L
+    RET
+
+SIGN_EXTEND:
+    ; Extends 8-bit A into 16-bit DE
+    LD E,A
+    RLA
+    SBC A,A
+    LD D,A
+    RET
+
+APPLY_FRICTION:
+    ; Every few frames, move DX/DY closer to zero
+    ; (Simplified for Z80 speed)
+    LD HL,CUE_DX
+    LD A,(HL)
+    CP 0
+    JR Z,FRIC_Y
+    JP P,POS_X
+    INC (HL)
+    JR FRIC_Y
+POS_X:
+    DEC (HL)
+FRIC_Y:
+    LD HL,CUE_DY
+    LD A,(HL)
+    CP 0
+    RET Z
+    JP P,POS_Y
+    INC (HL)
+    RET
+POS_Y:
+    DEC (HL)
+    RET
+
+INIT_RAM:
+    ; ASM80 variables initialized to zero usually, 
+    ; but we set defaults here.
+    LD HL,32
+    LD (CUE_X),HL
+    LD HL,64
+    LD (CUE_Y),HL
+    XOR A
+    LD (CUE_DX),A
+    LD (CUE_DY),A
+    LD (ANGLE_IDX),A
+    RET
 
 ;--------------------------------------------------------
-; ROM Data (Templates)
+; Data Tables (ROM)
 ;--------------------------------------------------------
-rom_data_start:
-cos_lut: .db 8, 6, 0, -6, -8, -6, 0, 6
-sin_lut: .db 0, 6, 8, 6, 0, -6, -8, -6
-initial_cue: .dw 32, 64, 0 ; x, y, dx/dy
-initial_angle: .db 0
-data_size EQU $ - rom_data_start
+COS_LUT: DB 8, 6, 0, -6, -8, -6, 0, 6
+SIN_LUT: DB 0, 6, 8, 6, 0, -6, -8, -6
 
 ;--------------------------------------------------------
-; RAM Variables
+; Variable Storage (RAM)
 ;--------------------------------------------------------
-    ORG RAM_START
-cos_lut_ram: .ds 8
-sin_lut_ram: .ds 8
-cue_x:       .ds 2
-cue_y:       .ds 2
-cue_dx:      .ds 1
-cue_dy:      .ds 1
-angle_idx:   .ds 1
+    ORG 8000H       ; Putting variables in RAM
+CUE_X:     DW 0
+CUE_Y:     DW 0
+CUE_DX:    DB 0
+CUE_DY:    DB 0
+ANGLE_IDX: DB 0
+
+    END
+
